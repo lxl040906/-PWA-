@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>猫咪饲养记录本</title>
+    <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoi54K55Zyo6LWE5rqQ57G7Iiwic2hvcnRfbmFtZSI6IuW4guS6rSIsInN0YXJ0X3VybCI6Ii8iLCJkaXNwbHkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiNmZmZmZmYiLCJ0aGVtZV9jb2xvciI6IiM0MjhiZjgifQ==">
+    <style>
+        * {box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont, sans-serif;}
+        body{background:#f7f9fc;padding:16px;color:#222;max-width:700px;margin:0 auto;}
+        .card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 8px #00000010;}
+        h2{margin-bottom:12px;font-size:20px;}
+        label{display:block;margin:10px 0 4px;font-weight:500;}
+        input,select,textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:16px;}
+        button{background:#428bff;color:white;border:none;border-radius:8px;padding:12px 16px;margin:6px 0;font-size:16px;}
+        .record-img{max-width:100%;border-radius:8px;margin:8px 0;}
+        .warning{background:#fff3cd;color:#856404;padding:10px;border-radius:8px;margin:8px 0;}
+        .record-item{border-bottom:1px solid #eee;padding:12px 0;}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>新建猫咪记录</h2>
+        <label>记录类型</label>
+        <select id="type">
+            <option value="vaccine">疫苗</option>
+            <option value="worm_in">体内驱虫</option>
+            <option value="worm_out">体外驱虫</option>
+            <option value="weight">体重记录</option>
+            <option value="sick">生病/就医</option>
+            <option value="cost">消费</option>
+            <option value="other">其他</option>
+        </select>
+        <label>体重(kg)</label>
+        <input type="number" step="0.01" id="weight" placeholder="留空不填">
+        <label>下次提醒日期</label>
+        <input type="date" id="nextRemind">
+        <label>备注</label>
+        <textarea id="note" rows="3"></textarea>
+        <label>上传照片（自动压缩）</label>
+        <input type="file" id="imgInput" accept="image/*">
+        <button onclick="saveRecord()">保存记录</button>
+    </div>
+
+    <div class="card">
+        <h2>记录列表</h2>
+        <button onclick="renderRecords()">刷新列表</button>
+        <button onclick="exportCSV()">导出CSV备份</button>
+        <div id="list"></div>
+    </div>
+
+<script>
+// IndexedDB 数据库初始化
+let db;
+function initDB(){
+    return new Promise((res, rej)=>{
+        const req = indexedDB.open("CatRecordDB",1);
+        req.onupgradeneeded = e=>{
+            db = e.target.result;
+            db.createObjectStore("records",{keyPath:"id",autoIncrement:true});
+        };
+        req.onsuccess = e=>{ db=e.target.result; res(); };
+        req.onerror = e=>rej(e);
+    })
+}
+
+// 图片压缩
+async function compressImage(file,maxW=1200,quality=0.6){
+    return new Promise((res)=>{
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = e=>{
+            const img = new Image();
+            img.src = e.target.result;
+            img.onload = ()=>{
+                const canvas = document.createElement("canvas");
+                let w = img.width, h=img.height;
+                if(w>maxW){ h = h*maxW/w; w=maxW; }
+                canvas.width=w;canvas.height=h;
+                const ctx = canvas.getContext("2d");
+                ctx.drawImage(img,0,0,w,h);
+                res(canvas.toDataURL("image/jpeg",quality));
+            }
+        }
+    })
+}
+
+// 保存记录
+async function saveRecord(){
+    await initDB();
+    const type = document.getElementById("type").value;
+    const weight = document.getElementById("weight").value;
+    const nextRemind = document.getElementById("nextRemind").value;
+    const note = document.getElementById("note").value;
+    const imgFile = document.getElementById("imgInput").files[0];
+    let imgBase64 = "";
+    if(imgFile) imgBase64 = await compressImage(imgFile);
+
+    const record = {
+        createTime:new Date().toLocaleString(),
+        type,weight,nextRemind,note,img:imgBase64
+    };
+    const tx = db.transaction("records","readwrite");
+    tx.objectStore("records").add(record);
+    tx.oncomplete=()=>{
+        alert("保存成功！");
+        //清空表单
+        document.getElementById("weight").value="";
+        document.getElementById("nextRemind").value="";
+        document.getElementById("note").value="";
+        document.getElementById("imgInput").value="";
+        renderRecords();
+    }
+}
+
+// 读取并渲染记录
+async function renderRecords(){
+    await initDB();
+    const tx = db.transaction("records","readonly");
+    const store = tx.objectStore("records");
+    const req = store.getAll();
+    req.onsuccess = e=>{
+        const records = e.target.result;
+        records.sort((a,b)=>new Date(b.createTime)-new Date(a.createTime));
+        const listDom = document.getElementById("list");
+        listDom.innerHTML="";
+        records.forEach(r=>{
+            const div = document.createElement("div");
+            div.className="record-item";
+            let isWarn = false;
+            if(r.nextRemind){
+                const d1=new Date(r.nextRemind),now=new Date();
+                if(d1 <= now) isWarn=true;
+            }
+            div.innerHTML = `
+                ${isWarn?'<div class="warning">⚠️该事项已到提醒日期</div>':''}
+                <div>${r.createTime}</div>
+                <div><b>${r.type}</b> ${r.weight?"体重："+r.weight+"kg":""}</div>
+                <div>下次：${r.nextRemind||"无"}</div>
+                <div>备注：${r.note||""}</div>
+                ${r.img?`<img class="record-img" src="${r.img}">`:""}
+            `;
+            listDom.appendChild(div);
+        })
+    }
+}
+
+//导出CSV备份
+async function exportCSV(){
+    await initDB();
+    const store = db.transaction("records","readonly").objectStore("records");
+    const data = await new Promise(res=>store.getAll().onsuccess=e=>res(e.target.result));
+    let csv="时间,类型,体重,下次提醒,备注\n";
+    data.forEach(r=>{
+        csv += `"${r.createTime}","${r.type}","${r.weight||''}","${r.nextRemind||''}","${r.note||''}"\n`;
+    })
+    const blob = new Blob([csv],{type:"text/csv"});
+    const a = document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="猫咪记录备份.csv";
+    a.click();
+}
+
+//页面加载自动读取
+window.onload=()=>{initDB().then(renderRecords);}
+</script>
+</body>
+</html>
+
